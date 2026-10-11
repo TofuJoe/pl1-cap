@@ -5,7 +5,7 @@ ConditionPathExists=/sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_lim
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/pl1-cap
-Environment=CAP_POWERSAVE=11000000 CAP_BALANCED=21000000 CAP_PERFORMANCE=41000000
+RuntimeDirectory=pl1-cap
 Restart=always
 RestartSec=5
 Nice=-5

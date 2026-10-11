@@ -1,0 +1,65 @@
+#!/bin/bash
+# pl1-cap-set: ad-hoc PL1 override for the pl1-cap daemon, plus status.
+#
+#   pl1-cap-set <watts> [seconds]   set an ad-hoc cap (default: until cleared)
+#   pl1-cap-set clear               drop the override, back to power-mode caps
+#   pl1-cap-set status              register, mode, configured caps, override
+#
+# The override wins over the GNOME-mode cap while it is in effect and on AC.
+# With [seconds] it lapses that long after being set; without, it holds until
+# cleared (or until reboot, since it lives in tmpfs). Writing it needs root, so
+# a set/clear re-runs itself under sudo; status reads world-readable files.
+OVERRIDE=${OVERRIDE:-/run/pl1-cap/override}
+OVERRIDE_DIR=$(dirname "$OVERRIDE")
+MMIO=/sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw
+PPD=/etc/tuned/ppd_base_profile
+CONF=/etc/pl1-cap.conf
+
+need_root() { [ "$(id -u)" = 0 ] || exec sudo -- "$0" "$@"; }
+w2uw() { awk "BEGIN{printf \"%d\", $1*1000000}"; }
+uw2w() { awk "BEGIN{printf \"%g\", ${1:-0}/1000000}"; }
+
+case "${1:-status}" in
+    status)
+        echo "register : $(uw2w "$(cat "$MMIO" 2>/dev/null)") W"
+        echo "mode     : $(cat "$PPD" 2>/dev/null || echo '?')"
+        [ -r "$CONF" ] && ( . "$CONF" 2>/dev/null
+            echo "caps     : power-saver $(uw2w "$CAP_POWERSAVE") W / balanced $(uw2w "$CAP_BALANCED") W / performance $(uw2w "$CAP_PERFORMANCE") W" )
+        if [ -r "$OVERRIDE" ]; then
+            read -r val ttl < "$OVERRIDE"
+            if [ -n "$ttl" ]; then
+                left=$(( ttl - ($(date +%s) - $(stat -c %Y "$OVERRIDE")) ))
+                [ "$left" -gt 0 ] && echo "override : $(uw2w "$val") W (${left}s left)" \
+                                  || echo "override : $(uw2w "$val") W (lapsed)"
+            else
+                echo "override : $(uw2w "$val") W (until cleared)"
+            fi
+        else
+            echo "override : none"
+        fi
+        ;;
+    clear|off|none)
+        need_root "$@"
+        rm -f "$OVERRIDE"
+        echo "pl1-cap-set: override cleared"
+        ;;
+    *)
+        case "$1" in ''|*[!0-9.]*) echo "usage: pl1-cap-set <watts> [seconds] | clear | status" >&2; exit 1 ;; esac
+        uw=$(w2uw "$1")
+        [ "$uw" -gt 0 ] 2>/dev/null || { echo "pl1-cap-set: watts must be > 0" >&2; exit 1; }
+        ttl=
+        if [ -n "$2" ]; then
+            case "$2" in *[!0-9]*) echo "pl1-cap-set: seconds must be a whole number" >&2; exit 1 ;; esac
+            ttl=$2
+        fi
+        need_root "$@"
+        mkdir -p "$OVERRIDE_DIR"
+        if [ -n "$ttl" ]; then
+            printf '%s %s\n' "$uw" "$ttl" > "$OVERRIDE"
+            echo "pl1-cap-set: override $(uw2w "$uw") W for ${ttl}s"
+        else
+            printf '%s\n' "$uw" > "$OVERRIDE"
+            echo "pl1-cap-set: override $(uw2w "$uw") W until cleared"
+        fi
+        ;;
+esac

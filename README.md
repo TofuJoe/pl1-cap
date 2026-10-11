@@ -29,17 +29,41 @@ The EC only acts when the register holds one of its own values:
 
 `pl1-cap` reads the GNOME mode from tuned-ppd's `/etc/tuned/ppd_base_profile` once a second and rewrites the register when it differs. 42 W is the one cap the EC will fight, so it gets re-asserted within a second; `CAP_PERFORMANCE=41000000` avoids that fight with no practical loss.
 
+## Changing the caps
+
+The three caps live in `/etc/pl1-cap.conf`, in microwatts:
+
+```
+CAP_POWERSAVE=11000000
+CAP_BALANCED=21000000
+CAP_PERFORMANCE=41000000
+```
+
+The daemon re-reads this file every loop, so an edit takes effect within a second — no restart or `daemon-reload` needed.
+
+## Ad-hoc overrides
+
+`pl1-cap-set` sets a one-off cap that wins over the power-mode cap while it is in effect and the laptop is on AC:
+
+```
+pl1-cap-set 18         # hold 18 W until cleared
+pl1-cap-set 25 600     # hold 25 W for 10 minutes, then fall back to the mode cap
+pl1-cap-set clear      # drop the override now
+pl1-cap-set status     # register, mode, configured caps, active override
+```
+
+The override lives in `/run/pl1-cap/override` (tmpfs), so it is gone after a reboot. `set`/`clear` need root and re-run themselves under `sudo`; `status` is read-only and does not.
+
 Secure Boot + `lockdown=integrity` blocks `/dev/cpu/msr` and `/dev/mem`, so `throttled` and `intel-undervolt` can't help here. The powercap sysfs path stays writable as root.
 
 ## Install
 
 ```
-./install.sh      # installs to /usr/local/bin + /etc/systemd/system, enables and starts
+./install.sh      # pl1-cap + pl1-cap-set to /usr/local/bin, unit to /etc/systemd/system,
+                  # a default /etc/pl1-cap.conf (only if absent), then enable and start
 ./uninstall.sh
 journalctl -u pl1-cap -f   # logs only when it corrects the register
 ```
-
-The caps are set on the `Environment=` line in `pl1-cap.service`.
 
 ## Still open
 

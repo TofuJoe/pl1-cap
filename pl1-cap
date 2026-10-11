@@ -3,11 +3,18 @@
 # (while docked on the P40w), with the value chosen by the GNOME power mode.
 #
 #   power-saver -> CAP_POWERSAVE    (default 11 W)
-#   balanced    -> CAP_BALANCED     (default 28 W)
-#   performance -> CAP_PERFORMANCE  (default 42 W)
+#   balanced    -> CAP_BALANCED     (default 21 W)
+#   performance -> CAP_PERFORMANCE  (default 41 W)
 #
-# The mode is read from tuned-ppd's /etc/tuned/ppd_base_profile, which holds the
-# GNOME-level name whether or not tuned picked a -battery variant underneath.
+# The caps live in $CONF (/etc/pl1-cap.conf), which is re-read every loop, so
+# editing it takes effect within INTERVAL with no restart. The mode is read from
+# tuned-ppd's /etc/tuned/ppd_base_profile, which holds the GNOME-level name
+# whether or not tuned picked a -battery variant underneath.
+#
+# An ad-hoc override in $OVERRIDE (/run/pl1-cap/override) wins over the mode cap
+# while on AC: a line "<uW> [ttl_seconds]"; with a ttl it lapses that many
+# seconds after the file was last written, without one it holds until removed.
+# Write it with `pl1-cap-set`. It lives in tmpfs, so it is gone after a reboot.
 #
 # Why this works: the EC only acts on its own two values. With the MMIO PL1
 # reading 42 W it derates to 13 W ~8-10 s after the package hits 97 C, and with
@@ -23,33 +30,63 @@
 # Only enforced on AC. On battery the EC's policy is restored by writing 13 W
 # once: that is the EC's own "derated" value, so it resumes its normal
 # 13 <-> 42 W policy from there (unverified for a 13 we wrote ourselves).
-CAP_POWERSAVE=${CAP_POWERSAVE:-11000000}
-CAP_BALANCED=${CAP_BALANCED:-28000000}
-CAP_PERFORMANCE=${CAP_PERFORMANCE:-42000000}
+CONF=${CONF:-/etc/pl1-cap.conf}
+OVERRIDE=${OVERRIDE:-/run/pl1-cap/override}
 EC_HANDBACK=13000000
 MMIO=/sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw
 AC=/sys/class/power_supply/AC/online
 PPD=/etc/tuned/ppd_base_profile
 INTERVAL=${INTERVAL:-1}
 
+# Built-in defaults, overridden per-loop by anything $CONF sets.
+DEF_POWERSAVE=11000000
+DEF_BALANCED=21000000
+DEF_PERFORMANCE=41000000
+
 [ -w "$MMIO" ] || { echo "pl1-cap: $MMIO not writable" >&2; exit 1; }
-echo "pl1-cap: power-saver=$((CAP_POWERSAVE/1000000)) W balanced=$((CAP_BALANCED/1000000)) W performance=$((CAP_PERFORMANCE/1000000)) W, AC only (interval ${INTERVAL}s)"
+echo "pl1-cap: AC only, interval ${INTERVAL}s, caps from $CONF, override $OVERRIDE"
+
+# Echo the override uW if the file holds a positive integer and has not lapsed.
+read_override() {
+    [ -r "$OVERRIDE" ] || return
+    local val ttl mtime now
+    read -r val ttl < "$OVERRIDE" 2>/dev/null || return
+    case "$val" in ''|*[!0-9]*) return ;; esac
+    [ "$val" -gt 0 ] || return
+    if [ -n "$ttl" ]; then
+        case "$ttl" in *[!0-9]*) return ;; esac
+        mtime=$(stat -c %Y "$OVERRIDE" 2>/dev/null) || return
+        now=$(date +%s)
+        [ $(( now - mtime )) -le "$ttl" ] || return
+    fi
+    echo "$val"
+}
 
 owned=0   # 1 while we are holding the register, so we hand back exactly once
 while :; do
-    want=
+    CAP_POWERSAVE=$DEF_POWERSAVE
+    CAP_BALANCED=$DEF_BALANCED
+    CAP_PERFORMANCE=$DEF_PERFORMANCE
+    [ -r "$CONF" ] && . "$CONF" 2>/dev/null
+
+    want= ; reason=
     if [ "$(cat "$AC" 2>/dev/null)" = 1 ]; then
-        case "$(cat "$PPD" 2>/dev/null)" in
-            power-saver) want=$CAP_POWERSAVE ;;
-            balanced)    want=$CAP_BALANCED ;;
-            performance) want=$CAP_PERFORMANCE ;;
-        esac
+        ov=$(read_override)
+        if [ -n "$ov" ]; then
+            want=$ov; reason=override
+        else
+            case "$(cat "$PPD" 2>/dev/null)" in
+                power-saver) want=$CAP_POWERSAVE;   reason=power-saver ;;
+                balanced)    want=$CAP_BALANCED;    reason=balanced ;;
+                performance) want=$CAP_PERFORMANCE; reason=performance ;;
+            esac
+        fi
     fi
 
     cur=$(cat "$MMIO" 2>/dev/null)
     if [ -n "$want" ]; then
         if [ -n "$cur" ] && [ "$cur" != "$want" ]; then
-            echo "pl1-cap: read $((cur/1000000)) W, setting $((want/1000000)) W ($(cat "$PPD"))"
+            echo "pl1-cap: read $((cur/1000000)) W, setting $((want/1000000)) W ($reason)"
             echo "$want" > "$MMIO"
         fi
         owned=1
