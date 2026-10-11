@@ -1,0 +1,14 @@
+[Unit]
+Description=Hold package PL1 (MMIO RAPL) per GNOME power mode on AC, defeating the EC 42/13 W flap
+ConditionPathExists=/sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pl1-cap
+Environment=CAP_POWERSAVE=11000000 CAP_BALANCED=28000000 CAP_PERFORMANCE=42000000
+Restart=always
+RestartSec=5
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

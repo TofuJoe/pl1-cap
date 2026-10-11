@@ -1,0 +1,62 @@
+#!/bin/bash
+# pl1-cap: pin the package PL1 that the ThinkPad EC flaps between 42 W and 13 W
+# (while docked on the P40w), with the value chosen by the GNOME power mode.
+#
+#   power-saver -> CAP_POWERSAVE    (default 11 W)
+#   balanced    -> CAP_BALANCED     (default 28 W)
+#   performance -> CAP_PERFORMANCE  (default 42 W)
+#
+# The mode is read from tuned-ppd's /etc/tuned/ppd_base_profile, which holds the
+# GNOME-level name whether or not tuned picked a -battery variant underneath.
+#
+# Why this works: the EC only acts on its own two values. With the MMIO PL1
+# reading 42 W it derates to 13 W ~8-10 s after the package hits 97 C, and with
+# it reading 13 W it re-grants 42 W only after the package has cooled and load
+# has gone away. With any other value present the EC leaves the register alone.
+# 42 W is therefore the one cap the EC will fight; the loop re-asserts it within
+# INTERVAL, but CAP_PERFORMANCE=41000000 avoids the fight with no practical loss
+# (the cooler sustains ~27 W, see ~/.claude memory p40w-5v-pd-throttle).
+#
+# 11 W matches what the EC itself picks in low-power/balanced while it believes
+# the dock is a 5 V supply, and is not one of its trigger values, so it holds.
+#
+# Only enforced on AC. On battery the EC's policy is restored by writing 13 W
+# once: that is the EC's own "derated" value, so it resumes its normal
+# 13 <-> 42 W policy from there (unverified for a 13 we wrote ourselves).
+CAP_POWERSAVE=${CAP_POWERSAVE:-11000000}
+CAP_BALANCED=${CAP_BALANCED:-28000000}
+CAP_PERFORMANCE=${CAP_PERFORMANCE:-42000000}
+EC_HANDBACK=13000000
+MMIO=/sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw
+AC=/sys/class/power_supply/AC/online
+PPD=/etc/tuned/ppd_base_profile
+INTERVAL=${INTERVAL:-1}
+
+[ -w "$MMIO" ] || { echo "pl1-cap: $MMIO not writable" >&2; exit 1; }
+echo "pl1-cap: power-saver=$((CAP_POWERSAVE/1000000)) W balanced=$((CAP_BALANCED/1000000)) W performance=$((CAP_PERFORMANCE/1000000)) W, AC only (interval ${INTERVAL}s)"
+
+owned=0   # 1 while we are holding the register, so we hand back exactly once
+while :; do
+    want=
+    if [ "$(cat "$AC" 2>/dev/null)" = 1 ]; then
+        case "$(cat "$PPD" 2>/dev/null)" in
+            power-saver) want=$CAP_POWERSAVE ;;
+            balanced)    want=$CAP_BALANCED ;;
+            performance) want=$CAP_PERFORMANCE ;;
+        esac
+    fi
+
+    cur=$(cat "$MMIO" 2>/dev/null)
+    if [ -n "$want" ]; then
+        if [ -n "$cur" ] && [ "$cur" != "$want" ]; then
+            echo "pl1-cap: read $((cur/1000000)) W, setting $((want/1000000)) W ($(cat "$PPD"))"
+            echo "$want" > "$MMIO"
+        fi
+        owned=1
+    elif [ "$owned" = 1 ]; then
+        echo "pl1-cap: on battery (or unknown mode), handing PL1 back to firmware"
+        echo "$EC_HANDBACK" > "$MMIO"
+        owned=0
+    fi
+    sleep "$INTERVAL"
+done
