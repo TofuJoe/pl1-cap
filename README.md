@@ -5,8 +5,8 @@ Holds the package long-term power limit (PL1) on a ThinkPad X1 (i5-1240P, Fedora
 | GNOME power mode | PL1 on AC |
 |---|---|
 | Power Saver | 11 W |
-| Balanced | 28 W |
-| Performance | 42 W |
+| Balanced | 21 W |
+| Performance | 41 W |
 | On battery | handed back to firmware (13 W written once) |
 
 ## Why
@@ -16,7 +16,7 @@ Docked, the EC rewrites the MMIO RAPL PL1 (`/sys/class/powercap/intel-rapl-mmio:
 - the CPU drops to 0.6-0.8 GHz, and the everyday desktop (browser + 5K display, 12-14 W) sits right at the cap;
 - the GuC power balancer clamps the xe iGPU to 300 MHz (`tile0/gt0/freq0/throttle/reasons` reads `pl1`). A Teams video call then saturates the GPU and every browser window lags.
 
-The input power is fine: the battery stays flat at 30-48 W draw. The chassis can sustain about 27-28 W all-core at 97 °C, and the first ~10 s burst is thermally bound whether the cap is 28 W or 42 W, so a 28 W cap loses nothing in bursts and avoids the 13 W cliff.
+The input power is fine: the battery stays flat at 30-48 W draw. The chassis can sustain about 27-28 W all-core at 97 °C, and the first ~10 s burst is thermally bound whether the cap is 21 W or 42 W, so a cap below the sustained ceiling loses nothing in bursts and avoids the 13 W cliff.
 
 ## How it works
 
